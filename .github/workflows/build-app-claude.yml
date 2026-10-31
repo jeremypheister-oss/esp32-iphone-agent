@@ -1,0 +1,30 @@
+# Rebuilds only the app, patched so Claude requests skip the `temperature` field.
+name: Build app (Claude fix)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ipa:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v5
+      - name: Skip temperature for Claude
+        run: |
+          sed -i '' 's/var body: \[String: Any\] = \["model": model, "temperature": temperature\]/var body: [String: Any] = ["model": model]; if !(baseURL.host ?? "").hasSuffix("anthropic.com") { body["temperature"] = temperature }/' ios/IPhoneAgent/Services/LLMClient.swift
+          grep -n 'anthropic.com' ios/IPhoneAgent/Services/LLMClient.swift
+      - name: Build unsigned app
+        run: |
+          xcodebuild -project ios/IPhoneAgent.xcodeproj -scheme IPhoneAgent -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -archivePath build/App.xcarchive archive \
+            IA_BUNDLE_ID=com.dominic.esp32agent \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+      - name: Package IPA
+        run: |
+          APP=$(find build/App.xcarchive/Products/Applications -maxdepth 1 -name '*.app' | head -1)
+          mkdir -p Payload && cp -R "$APP" Payload/
+          zip -qr ESP32Agent.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ESP32Agent-ipa-claude
+          path: ESP32Agent.ipa
