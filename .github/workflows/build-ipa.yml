@@ -1,0 +1,58 @@
+# Builds an unsigned IPA (for any sideloading tool) + a single firmware .bin (for the browser flasher).
+# Run it: GitHub repo → Actions → "Build app and firmware" → Run workflow. Downloads appear at the bottom of the run.
+name: Build app and firmware
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ipa:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build unsigned app
+        run: |
+          xcodebuild -project ios/IPhoneAgent.xcodeproj -scheme IPhoneAgent -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -archivePath build/App.xcarchive archive \
+            IA_BUNDLE_ID=com.dominic.esp32agent \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+      - name: Package IPA
+        run: |
+          APP=$(find build/App.xcarchive/Products/Applications -maxdepth 1 -name '*.app' | head -1)
+          mkdir -p Payload && cp -R "$APP" Payload/
+          zip -qr ESP32Agent.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ESP32Agent-ipa
+          path: ESP32Agent.ipa
+
+  firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: arduino/setup-arduino-cli@v2
+      - name: Install ESP32 core + BLE lib
+        run: |
+          URL=https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core update-index --additional-urls $URL
+          arduino-cli core install esp32:esp32@3.3.12 --additional-urls $URL
+          arduino-cli lib install "NimBLE-Arduino@2.5.1"
+      - name: Build firmware
+        run: hardware/flash.sh --build-only
+      - name: Make one flashable .bin
+        run: |
+          cd hardware/build
+          MERGED=$(ls *.merged.bin 2>/dev/null | head -1 || true)
+          if [ -z "$MERGED" ]; then
+            pip install esptool
+            BOOT0=$(find ~/.arduino15 -name boot_app0.bin | head -1)
+            python -m esptool --chip esp32s3 merge_bin -o firmware.bin \
+              0x0 hid_bridge.ino.bootloader.bin 0x8000 hid_bridge.ino.partitions.bin \
+              0xe000 "$BOOT0" 0x10000 hid_bridge.ino.bin
+          else
+            cp "$MERGED" firmware.bin
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ESP32Agent-firmware
+          path: hardware/build/firmware.bin
